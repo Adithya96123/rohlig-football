@@ -274,11 +274,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#f
           <h3><span style="font-size:18px">✖️</span> Stage multipliers</h3>
           <div class="mult-grid">
             <div class="mult-item"><div class="stage">Group</div><div class="mult">×1</div></div>
-            <div class="mult-item"><div class="stage">R32</div><div class="mult">×1.5</div></div>
-            <div class="mult-item"><div class="stage">R16</div><div class="mult">×2</div></div>
-            <div class="mult-item"><div class="stage">Quarter</div><div class="mult">×2</div></div>
-            <div class="mult-item"><div class="stage">Semi</div><div class="mult">×3</div></div>
-            <div class="mult-item"><div class="stage">Final</div><div class="mult">×4</div></div>
+            <div class="mult-item"><div class="stage">R16</div><div class="mult">×1.25</div></div>
+            <div class="mult-item"><div class="stage">Quarter</div><div class="mult">×1.5</div></div>
+            <div class="mult-item"><div class="stage">Semi</div><div class="mult">×2</div></div>
+            <div class="mult-item" style="background:rgba(251,191,36,0.1);border-color:rgba(251,191,36,0.3);grid-column:span 2"><div class="stage" style="color:#fbbf24">FINAL</div><div class="mult">×2.5</div></div>
           </div>
         </div>
       </div>
@@ -293,7 +292,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#f
       </div>
       <div class="rules-card" style="background:rgba(251,191,36,0.06);border-color:rgba(251,191,36,0.25)">
         <div style="font-size:13px;font-weight:900;color:#fbbf24;display:flex;align-items:center;gap:7px;margin-bottom:6px"><i class="ti ti-clock" style="font-size:15px"></i> Deadline rule</div>
-        <div style="font-size:13px;color:rgba(255,255,255,0.65)">All predictions must be submitted by <strong style="color:#fbbf24">5:00 PM UAE time</strong> on match day. Late entries score 0 points. Scores are verified against live FIFA data daily.</div>
+        <div style="font-size:13px;color:rgba(255,255,255,0.65)">Each match locks automatically <strong style="color:#fbbf24">10 minutes before its kickoff time</strong>. Example: match at 11:00 PM UAE → locks at 10:50 PM. A 2:00 AM match → locks at 1:50 AM. You can predict any upcoming match anytime before its lock time.</div>
       </div>
     </div>
   </div>
@@ -395,7 +394,7 @@ const STAFF=[
 // Admin emails (can see Admin button)
 const ADMIN_EMAILS=['prasanth.ck@rohlig.com','jinith.pv@rohlig.com'];
 
-const MULTIPLIERS={'Group Stage':1,'Round of 32':1.5,'Round of 16':2,'Quarter-final':2,'Semi-final':3,'Final':4};
+const MULTIPLIERS={'Group Stage':1,'Round of 32':1,'Round of 16':1.25,'Quarter-final':1.5,'Semi-final':2,'Final':2.5};
 const COLORS=[['#1d4ed8','#93c5fd'],['#166534','#4ade80'],['#92400e','#fcd34d'],['#831843','#f9a8d4'],['#4c1d95','#c4b5fd'],['#9a3412','#fdba74'],['#0e7490','#67e8f9'],['#713f12','#fef08a'],['#1e3a5f','#7dd3fc'],['#3b0764','#e879f9']];
 
 // ── FIFA WC 2026 BUILT-IN MATCHES ──
@@ -456,7 +455,19 @@ let saveTimer=null;
 function getColor(email){const i=STAFF.findIndex(s=>s.email.toLowerCase()===email.toLowerCase())%COLORS.length;return i>=0?COLORS[i]:COLORS[0];}
 function initials(name){return name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();}
 function getUAE(){return new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Dubai'}));}
-function isDeadlinePassed(){const t=getUAE();return t.getHours()>=17;}
+function isMatchLocked(m){
+  // Lock each match 10 minutes before its own kickoff time
+  try{
+    const uaeNow=getUAE();
+    const[h,min]=m.uaeTime.split(':').map(Number);
+    const matchDate=new Date(m.date+'T00:00:00+04:00');
+    const kickoff=new Date(matchDate);
+    kickoff.setHours(h,min,0,0);
+    const lockTime=new Date(kickoff.getTime()-10*60*1000); // 10 mins before
+    const nowUTC=new Date();
+    return nowUTC>=lockTime;
+  }catch(e){return false;}
+}
 function todayStr(){return getUAE().toISOString().slice(0,10);}
 
 // ── LOGIN ──
@@ -588,8 +599,11 @@ function renderSchedule(){
     hdr.className='day-header '+hdrClass;
     hdr.innerHTML=`<div class="day-name">${prefix}${dayName}</div><div class="day-count">${matches.length} match${matches.length>1?'es':''}</div>`;
     sec.appendChild(hdr);
-    const locked=isPast||(isToday&&isDeadlinePassed());
-    matches.forEach(m=>sec.appendChild(buildCard(m,locked)));
+    const locked=isPast; // past days always locked
+    matches.forEach(m=>{
+      const matchLocked=locked||isMatchLocked(m); // each match checks its own time
+      sec.appendChild(buildCard(m,matchLocked));
+    });
     container.appendChild(sec);
   });
 }
@@ -636,7 +650,7 @@ function renderFooter(id,m,locked,submitted,pred,actual,mult,maxPts){
   const f=document.getElementById('footer-'+id);
   if(!f)return;
   if(!currentUser){f.innerHTML=`<div class="no-user-msg">Sign in to predict</div>`;return;}
-  if(locked&&!submitted){f.innerHTML=`<div class="status-locked"><i class="ti ti-lock" style="font-size:13px"></i> Deadline passed — predictions closed</div>`;return;}
+  if(locked&&!submitted){f.innerHTML=`<div class="status-locked"><i class="ti ti-lock" style="font-size:13px"></i> Locked — predictions closed 10 mins before kickoff (${m.uaeTime} UAE)</div>`;return;}
   if(submitted){
     let scored='';
     if(actual){
@@ -722,12 +736,36 @@ function renderLeaderboard(){
 function updateDeadline(){
   const pill=document.getElementById('deadline-pill');
   const txt=document.getElementById('deadline-text');
-  const t=getUAE();
-  if(isDeadlinePassed()){pill.classList.add('closed');txt.textContent='Closed today';}
-  else{
+  const nowUTC=new Date();
+  // Find next match that isn't locked yet
+  const allM=getAllMatchesSafe();
+  let nextLock=null;
+  for(const m of allM){
+    try{
+      const[h,min]=m.uaeTime.split(':').map(Number);
+      const matchDate=new Date(m.date+'T00:00:00+04:00');
+      const kickoff=new Date(matchDate);
+      kickoff.setHours(h,min,0,0);
+      const lockTime=new Date(kickoff.getTime()-10*60*1000);
+      if(nowUTC<lockTime){nextLock={m,lockTime};break;}
+    }catch(e){}
+  }
+  if(!nextLock){
+    pill.classList.add('closed');
+    txt.textContent='All matches locked';
+  } else {
     pill.classList.remove('closed');
-    const rem=17*60-(t.getHours()*60+t.getMinutes());
-    txt.textContent=Math.floor(rem/60)+'h '+(rem%60)+'m left';
+    const diffMs=nextLock.lockTime-nowUTC;
+    const diffMins=Math.floor(diffMs/60000);
+    const hrs=Math.floor(diffMins/60);
+    const mins=diffMins%60;
+    const lockStr=nextLock.m.home+' vs '+nextLock.m.away;
+    if(diffMins<=30){
+      pill.classList.add('closed');
+      txt.textContent='⚠️ Locks in '+(hrs>0?hrs+'h ':'')+mins+'m — '+lockStr;
+    } else {
+      txt.textContent='Next lock: '+(hrs>0?hrs+'h ':'')+mins+'m — '+lockStr;
+    }
   }
 }
 
