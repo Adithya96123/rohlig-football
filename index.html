@@ -392,7 +392,7 @@ const STAFF=[
   {name:'Muneer Palakkal',email:'muneer.palakkal@rohlig.com'},
 ];
 // Admin emails (can see Admin button)
-const ADMIN_EMAILS=['prasanth.ck@rohlig.com','jinith.pv@rohlig.com'];
+const ADMIN_EMAILS=['prasanth.ck@rohlig.com','jinith.pv@rohlig.com','adithya.kolakkat@rohlig.com'];
 
 const MULTIPLIERS={'Group Stage':1,'Round of 32':1,'Round of 16':1.25,'Quarter-final':1.5,'Semi-final':2,'Final':2.5};
 const COLORS=[['#1d4ed8','#93c5fd'],['#166534','#4ade80'],['#92400e','#fcd34d'],['#831843','#f9a8d4'],['#4c1d95','#c4b5fd'],['#9a3412','#fdba74'],['#0e7490','#67e8f9'],['#713f12','#fef08a'],['#1e3a5f','#7dd3fc'],['#3b0764','#e879f9']];
@@ -512,35 +512,68 @@ function initApp(){
 const saved=localStorage.getItem('rohlig_user');
 if(saved){try{currentUser=JSON.parse(saved);initApp();}catch(e){localStorage.removeItem('rohlig_user');}}
 
-// ── DB — localStorage only (no external APIs needed) ──
-function loadFromCloud(){
+// ── SHARED DATABASE via JSONBin ──
+const BIN_ID='6a34d1aada38895dfedb72df';
+const MKEY='$2a$10$qmp8lXeU/Z.acHH1eW.9yOSBvoY.IG/w4NQbG/7T0XnSNwcw.Jaxm';
+const BIN_URL='https://api.jsonbin.io/v3/b/'+BIN_ID;
+
+async function loadFromCloud(){
+  // Always load localStorage first for instant display
   try{
-    const saved=localStorage.getItem('rohlig_wc_db');
-    if(saved) DB=JSON.parse(saved);
-    // Safety: remove any scores for matches that haven't kicked off yet
-    if(DB.actuals){
-      const uaeNow=getUAE();
-      getAllMatchesSafe().forEach(m=>{
-        if(DB.actuals[m.id]){
-          const matchDateTime=new Date(m.date+'T'+m.uaeTime+':00+04:00');
-          const twoHoursAfter=new Date(matchDateTime.getTime()+2*60*60*1000);
-          if(uaeNow<twoHoursAfter){
-            delete DB.actuals[m.id];
-            localStorage.setItem('rohlig_wc_db',JSON.stringify(DB));
-          }
-        }
-      });
+    const loc=localStorage.getItem('rohlig_wc_db');
+    if(loc) DB=JSON.parse(loc);
+  }catch(e){}
+  // Then try to get shared cloud data
+  try{
+    const r=await fetch(BIN_URL+'/latest',{
+      headers:{'X-Master-Key':MKEY,'X-Bin-Meta':'false'}
+    });
+    if(r.ok){
+      const j=await r.json();
+      if(j&&typeof j==='object'){
+        DB=j;
+        localStorage.setItem('rohlig_wc_db',JSON.stringify(DB));
+      }
     }
-  }catch(e){console.log('Load err',e);}
+  }catch(e){
+    console.log('Cloud load failed, using local data');
+  }
+  // Safety: remove scores for future matches
+  if(DB.actuals){
+    const uaeNow=getUAE();
+    getAllMatchesSafe().forEach(m=>{
+      if(DB.actuals[m.id]){
+        const matchDateTime=new Date(m.date+'T'+m.uaeTime+':00+04:00');
+        const twoHoursAfter=new Date(matchDateTime.getTime()+2*60*60*1000);
+        if(uaeNow<twoHoursAfter){
+          delete DB.actuals[m.id];
+        }
+      }
+    });
+  }
   renderAll();
 }
-function saveToCloud(){
+
+async function saveToCloud(){
+  showSync();
+  // Always save locally first
+  try{localStorage.setItem('rohlig_wc_db',JSON.stringify(DB));}catch(e){}
+  // Then push to shared cloud
   try{
-    localStorage.setItem('rohlig_wc_db',JSON.stringify(DB));
-    showSync();
-    setTimeout(hideSync,600);
-  }catch(e){console.log('Save err',e);}
+    await fetch(BIN_URL,{
+      method:'PUT',
+      headers:{
+        'Content-Type':'application/json',
+        'X-Master-Key':MKEY
+      },
+      body:JSON.stringify(DB)
+    });
+  }catch(e){
+    console.log('Cloud save failed, saved locally only');
+  }
+  hideSync();
 }
+
 function scheduleSave(){clearTimeout(saveTimer);saveTimer=setTimeout(saveToCloud,400);}
 function showSync(){document.getElementById('syncing').classList.add('show');}
 function hideSync(){document.getElementById('syncing').classList.remove('show');}
@@ -658,7 +691,31 @@ function renderFooter(id,m,locked,submitted,pred,actual,mult,maxPts){
       const ygd=Math.abs(pred.home-pred.away),agd=Math.abs(actual.home-actual.away);
       scored=`<div class="scored-box"><div class="scored-top"><span class="scored-label">Your: <strong>${pred.home}–${pred.away}</strong> (GD:${ygd}) | Actual: <strong>${actual.home}–${actual.away}</strong> (GD:${agd})</span><span class="scored-pts">${bd.total} pts</span></div><div class="pts-breakdown"><span class="pts-item ${bd.outcome?'earned':'missed'}"><i class="ti ti-${bd.outcome?'check':'x'}" style="font-size:10px"></i> Outcome +3</span><span class="pts-item ${bd.diff?'earned':'missed'}"><i class="ti ti-${bd.diff?'check':'x'}" style="font-size:10px"></i> Goal diff +2</span><span class="pts-item ${bd.exact?'earned':'missed'}"><i class="ti ti-${bd.exact?'check':'x'}" style="font-size:10px"></i> Exact score +3</span></div></div>`;
     }
-    f.innerHTML=`<div class="status-submitted"><div class="sleft"><i class="ti ti-check" style="font-size:14px"></i> Saved: ${pred.home}–${pred.away}</div><div style="font-size:12px;color:#4ade80">${actual?'':'Up to '+maxPts+' pts'}</div></div>${scored}`;
+    // Show all staff predictions for this match
+    const allPreds=DB.predictions[m.id]||{};
+    const predEntries=Object.entries(allPreds);
+    let allPredsHtml='';
+    if(predEntries.length>0){
+      const rows=predEntries.map(([email,p])=>{
+        const staffMember=STAFF.find(s=>s.email.toLowerCase()===email.toLowerCase());
+        const nm=staffMember?staffMember.name:email;
+        const isMe=currentUser&&email.toLowerCase()===currentUser.email.toLowerCase();
+        let ptsBadge='';
+        if(actual){
+          const bd2=calcBreakdown(p.home,p.away,actual.home,actual.away,mult);
+          ptsBadge=`<span style="font-size:11px;font-weight:800;color:#4ade80;margin-left:6px">${bd2.total}pts</span>`;
+        }
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05)">
+          <span style="font-size:11px;color:${isMe?'#4ade80':'rgba(255,255,255,0.6)'};font-weight:${isMe?'800':'400'}">${isMe?'👤 ':''} ${nm}</span>
+          <span style="font-size:12px;font-weight:800;color:white">${p.home}–${p.away}${ptsBadge}</span>
+        </div>`;
+      }).join('');
+      allPredsHtml=`<div style="margin-top:8px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:10px 12px">
+        <div style="font-size:10px;font-weight:800;color:rgba(255,255,255,0.3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">👥 All predictions (${predEntries.length})</div>
+        ${rows}
+      </div>`;
+    }
+    f.innerHTML=`<div class="status-submitted"><div class="sleft"><i class="ti ti-check" style="font-size:14px"></i> Saved: ${pred.home}–${pred.away}</div><div style="font-size:12px;color:#4ade80">${actual?'':'Up to '+maxPts+' pts'}</div></div>${scored}${allPredsHtml}`;
     return;
   }
   f.innerHTML=`<div class="preview-line" id="prev-${id}"></div><button class="btn-submit" onclick="submitPred('${id}',${mult})"><i class="ti ti-send" style="font-size:13px"></i> Submit prediction (up to ${maxPts} pts)</button>`;
@@ -828,7 +885,7 @@ async function clearAll(){
 }
 
 setInterval(updateDeadline,30000);
-setInterval(()=>{if(currentUser)loadFromCloud();},30000);
+setInterval(()=>{if(currentUser)loadFromCloud();},30000); // refresh every 30 secs
 </script>
 </body>
 </html>
