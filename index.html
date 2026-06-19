@@ -309,12 +309,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#f
     <div class="admin-body">
       <div class="auto-sync-row">
         <div>
-          <div style="font-size:13px;font-weight:800;color:white">🔄 Live score auto-sync</div>
-          <div style="font-size:11px;color:rgba(255,255,255,0.45);margin-top:2px">Powered by football-data.org · Auto-updates every 5 mins</div>
+          <div style="font-size:13px;font-weight:800;color:white">📋 Enter match scores</div>
+          <div style="font-size:11px;color:rgba(255,255,255,0.45);margin-top:2px">Enter final scores below after each match ends</div>
         </div>
-        <button class="btn-sync-now" onclick="syncScoresNow()">Sync now</button>
+        <button class="btn-sync-now" onclick="syncScoresNow()">Save scores</button>
       </div>
-      <div style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.4);text-transform:uppercase;margin-bottom:10px">Scores auto-fetched — manual override below if needed</div>
+      <div style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.4);text-transform:uppercase;margin-bottom:10px">Enter actual scores — points auto-calculate instantly</div>
       <div id="admin-matches-list"></div>
     </div>
     <div class="add-section">
@@ -495,190 +495,51 @@ function initApp(){
     document.getElementById('admin-btn').style.display='flex';
   }
   loadFromCloud();
-  setTimeout(autoSyncScores, 3000); // sync scores 3 seconds after login
 }
 
 // ── CHECK SAVED LOGIN ──
 const saved=localStorage.getItem('rohlig_user');
 if(saved){try{currentUser=JSON.parse(saved);initApp();}catch(e){localStorage.removeItem('rohlig_user');}}
 
-// ── DB ──
-async function loadFromCloud(){
+// ── DB — localStorage only (no external APIs needed) ──
+function loadFromCloud(){
   try{
-    const r=await fetch(API_URL+'/latest',{headers:{'X-Master-Key':API_KEY}});
-    const j=await r.json();
-    if(j.record)DB=j.record;
-    // Clear any wrongly stored 0-0 results for future matches
+    const saved=localStorage.getItem('rohlig_wc_db');
+    if(saved) DB=JSON.parse(saved);
+    // Safety: remove any scores for matches that haven't kicked off yet
     if(DB.actuals){
       const uaeNow=getUAE();
       getAllMatchesSafe().forEach(m=>{
         if(DB.actuals[m.id]){
-          const s=DB.actuals[m.id];
           const matchDateTime=new Date(m.date+'T'+m.uaeTime+':00+04:00');
           const twoHoursAfter=new Date(matchDateTime.getTime()+2*60*60*1000);
-          if(uaeNow<twoHoursAfter) delete DB.actuals[m.id];
+          if(uaeNow<twoHoursAfter){
+            delete DB.actuals[m.id];
+            localStorage.setItem('rohlig_wc_db',JSON.stringify(DB));
+          }
         }
       });
     }
   }catch(e){console.log('Load err',e);}
   renderAll();
 }
-async function saveToCloud(){
-  showSync();
-  try{await fetch(API_URL,{method:'PUT',headers:{'Content-Type':'application/json','X-Master-Key':API_KEY},body:JSON.stringify(DB)});}
-  catch(e){console.log('Save err',e);}
-  hideSync();
+function saveToCloud(){
+  try{
+    localStorage.setItem('rohlig_wc_db',JSON.stringify(DB));
+    showSync();
+    setTimeout(hideSync,600);
+  }catch(e){console.log('Save err',e);}
 }
-function scheduleSave(){clearTimeout(saveTimer);saveTimer=setTimeout(saveToCloud,800);}
+function scheduleSave(){clearTimeout(saveTimer);saveTimer=setTimeout(saveToCloud,400);}
 function showSync(){document.getElementById('syncing').classList.add('show');}
 function hideSync(){document.getElementById('syncing').classList.remove('show');}
 
-const FDKEY='680f0dd6cf3c43d695236858c91558f2';
-
-// Map our match IDs to football-data.org team names for matching
-const TEAM_NAME_MAP={
-  'USA':['United States','USA'],
-  'Australia':['Australia'],
-  'Scotland':['Scotland'],
-  'Morocco':['Morocco'],
-  'Brazil':['Brazil'],
-  'Haiti':['Haiti'],
-  'Netherlands':['Netherlands'],
-  'Sweden':['Sweden'],
-  'Germany':['Germany'],
-  'Ivory Coast':['Côte d\'Ivoire','Ivory Coast'],
-  'Ecuador':['Ecuador'],
-  'Curaçao':['Curaçao','Curacao'],
-  'Tunisia':['Tunisia'],
-  'Japan':['Japan'],
-  'Türkiye':['Türkiye','Turkey'],
-  'Paraguay':['Paraguay'],
-  'Spain':['Spain'],
-  'Saudi Arabia':['Saudi Arabia'],
-  'Belgium':['Belgium'],
-  'Iran':['Iran'],
-  'Uruguay':['Uruguay'],
-  'Cabo Verde':['Cabo Verde','Cape Verde'],
-  'New Zealand':['New Zealand'],
-  'Egypt':['Egypt'],
-  'Argentina':['Argentina'],
-  'Austria':['Austria'],
-  'France':['France'],
-  'Iraq':['Iraq'],
-  'Norway':['Norway'],
-  'Senegal':['Senegal'],
-  'Jordan':['Jordan'],
-  'Algeria':['Algeria'],
-  'Portugal':['Portugal'],
-  'Uzbekistan':['Uzbekistan'],
-  'England':['England'],
-  'Ghana':['Ghana'],
-  'Panama':['Panama'],
-  'Croatia':['Croatia'],
-  'Colombia':['Colombia'],
-  'DR Congo':['Congo DR','DR Congo'],
-  'Switzerland':['Switzerland'],
-  'Canada':['Canada'],
-  'Bosnia & Herz.':['Bosnia and Herzegovina'],
-  'Qatar':['Qatar'],
-  'Czechia':['Czech Republic','Czechia'],
-  'Mexico':['Mexico'],
-  'South Africa':['South Africa'],
-  'South Korea':['Korea Republic','South Korea'],
-};
-
-function teamsMatch(apiName, ourName){
-  const aliases=TEAM_NAME_MAP[ourName]||[ourName];
-  return aliases.some(a=>apiName.toLowerCase().includes(a.toLowerCase())||a.toLowerCase().includes(apiName.toLowerCase()));
-}
-
 async function syncScoresNow(){
-  const syncBtn=document.querySelector('.btn-sync-now');
-  if(syncBtn){syncBtn.textContent='Syncing...';syncBtn.disabled=true;}
-  showSync();
-  try{
-    const r=await fetch('https://api.football-data.org/v4/competitions/WC/matches?season=2026&status=FINISHED',{
-      headers:{'X-Auth-Token':FDKEY}
-    });
-    if(!r.ok){throw new Error('API error: '+r.status);}
-    const data=await r.json();
-    const finished=data.matches||[];
-    let updated=0;
-    const allMatches=getAllMatches();
-    const uaeNow=getUAE();
-    allMatches.forEach(m=>{
-      // Only process if match time has passed by at least 2 hours
-      const matchDateTime=new Date(m.date+'T'+m.uaeTime+':00+04:00');
-      const twoHoursAfter=new Date(matchDateTime.getTime()+2*60*60*1000);
-      if(uaeNow<twoHoursAfter) return;
-
-      const found=finished.find(fm=>{
-        const ht=fm.homeTeam?.name||'';
-        const at=fm.awayTeam?.name||'';
-        return teamsMatch(ht,m.home)&&teamsMatch(at,m.away);
-      });
-      if(found&&found.score?.fullTime?.home!=null&&(found.score.fullTime.home>0||found.score.fullTime.away>0||found.status==='FINISHED')){
-        if(!DB.actuals)DB.actuals={};
-        const newScore={home:found.score.fullTime.home,away:found.score.fullTime.away};
-        const existing=DB.actuals[m.id];
-        if(!existing||existing.home!==newScore.home||existing.away!==newScore.away){
-          DB.actuals[m.id]=newScore;
-          updated++;
-        }
-      }
-    });
-    if(updated>0){
-      await saveToCloud();
-      renderAll();
-      if(syncBtn){syncBtn.textContent='✅ '+updated+' score(s) updated!';}
-    } else {
-      if(syncBtn){syncBtn.textContent='✅ All up to date';}
-    }
-    setTimeout(()=>{if(syncBtn){syncBtn.textContent='Sync now';syncBtn.disabled=false;}},3000);
-  }catch(e){
-    console.log('Sync error',e);
-    if(syncBtn){syncBtn.textContent='⚠️ Sync failed - try again';syncBtn.disabled=false;}
-  }
-  hideSync();
+  saveToCloud();
+  const btn=document.querySelector('.btn-sync-now');
+  if(btn){btn.textContent='✅ Saved!';setTimeout(()=>{btn.textContent='Save scores';},2000);}
 }
-
-// Auto-sync every 5 minutes
-async function autoSyncScores(){
-  try{
-    const r=await fetch('https://api.football-data.org/v4/competitions/WC/matches?season=2026&status=FINISHED',{
-      headers:{'X-Auth-Token':FDKEY}
-    });
-    if(!r.ok)return;
-    const data=await r.json();
-    const finished=data.matches||[];
-    let updated=0;
-    const allMatches=getAllMatches();
-    const uaeNow=getUAE();
-
-    allMatches.forEach(m=>{
-      // Only process if match time has passed by at least 2 hours
-      const matchDateTime=new Date(m.date+'T'+m.uaeTime+':00+04:00');
-      const twoHoursAfter=new Date(matchDateTime.getTime()+2*60*60*1000);
-      if(uaeNow<twoHoursAfter) return; // skip — match not finished yet
-
-      const found=finished.find(fm=>{
-        const ht=fm.homeTeam?.name||'';
-        const at=fm.awayTeam?.name||'';
-        return teamsMatch(ht,m.home)&&teamsMatch(at,m.away);
-      });
-      if(found&&found.score?.fullTime?.home!=null&&(found.score.fullTime.home>0||found.score.fullTime.away>0||found.status==='FINISHED')){
-        if(!DB.actuals)DB.actuals={};
-        const newScore={home:found.score.fullTime.home,away:found.score.fullTime.away};
-        const existing=DB.actuals[m.id];
-        if(!existing||existing.home!==newScore.home||existing.away!==newScore.away){
-          DB.actuals[m.id]=newScore;
-          updated++;
-        }
-      }
-    });
-    if(updated>0){await saveToCloud();renderAll();}
-  }catch(e){console.log('Auto-sync err',e);}
-}
+async function autoSyncScores(){}
 
 function getOutcome(h,a){return h>a?'H':h<a?'A':'D';}
 function calcBreakdown(ph,pa,ah,aa,mult){
@@ -929,8 +790,7 @@ async function clearAll(){
 }
 
 setInterval(updateDeadline,30000);
-setInterval(()=>{if(currentUser)loadFromCloud();},60000);
-setInterval(()=>{if(currentUser)autoSyncScores();},300000); // auto-sync scores every 5 mins
+setInterval(()=>{if(currentUser)loadFromCloud();},30000);
 </script>
 </body>
 </html>
