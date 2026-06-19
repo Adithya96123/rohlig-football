@@ -508,6 +508,18 @@ async function loadFromCloud(){
     const r=await fetch(API_URL+'/latest',{headers:{'X-Master-Key':API_KEY}});
     const j=await r.json();
     if(j.record)DB=j.record;
+    // Clear any wrongly stored 0-0 results for future matches
+    if(DB.actuals){
+      const uaeNow=getUAE();
+      getAllMatchesSafe().forEach(m=>{
+        if(DB.actuals[m.id]){
+          const s=DB.actuals[m.id];
+          const matchDateTime=new Date(m.date+'T'+m.uaeTime+':00+04:00');
+          const twoHoursAfter=new Date(matchDateTime.getTime()+2*60*60*1000);
+          if(uaeNow<twoHoursAfter) delete DB.actuals[m.id];
+        }
+      });
+    }
   }catch(e){console.log('Load err',e);}
   renderAll();
 }
@@ -593,13 +605,19 @@ async function syncScoresNow(){
     const finished=data.matches||[];
     let updated=0;
     const allMatches=getAllMatches();
+    const uaeNow=getUAE();
     allMatches.forEach(m=>{
+      // Only process if match time has passed by at least 2 hours
+      const matchDateTime=new Date(m.date+'T'+m.uaeTime+':00+04:00');
+      const twoHoursAfter=new Date(matchDateTime.getTime()+2*60*60*1000);
+      if(uaeNow<twoHoursAfter) return;
+
       const found=finished.find(fm=>{
         const ht=fm.homeTeam?.name||'';
         const at=fm.awayTeam?.name||'';
         return teamsMatch(ht,m.home)&&teamsMatch(at,m.away);
       });
-      if(found&&found.score?.fullTime?.home!=null){
+      if(found&&found.score?.fullTime?.home!=null&&(found.score.fullTime.home>0||found.score.fullTime.away>0||found.status==='FINISHED')){
         if(!DB.actuals)DB.actuals={};
         const newScore={home:found.score.fullTime.home,away:found.score.fullTime.away};
         const existing=DB.actuals[m.id];
@@ -635,13 +653,20 @@ async function autoSyncScores(){
     const finished=data.matches||[];
     let updated=0;
     const allMatches=getAllMatches();
+    const uaeNow=getUAE();
+
     allMatches.forEach(m=>{
+      // Only process if match time has passed by at least 2 hours
+      const matchDateTime=new Date(m.date+'T'+m.uaeTime+':00+04:00');
+      const twoHoursAfter=new Date(matchDateTime.getTime()+2*60*60*1000);
+      if(uaeNow<twoHoursAfter) return; // skip — match not finished yet
+
       const found=finished.find(fm=>{
         const ht=fm.homeTeam?.name||'';
         const at=fm.awayTeam?.name||'';
         return teamsMatch(ht,m.home)&&teamsMatch(at,m.away);
       });
-      if(found&&found.score?.fullTime?.home!=null){
+      if(found&&found.score?.fullTime?.home!=null&&(found.score.fullTime.home>0||found.score.fullTime.away>0||found.status==='FINISHED')){
         if(!DB.actuals)DB.actuals={};
         const newScore={home:found.score.fullTime.home,away:found.score.fullTime.away};
         const existing=DB.actuals[m.id];
@@ -662,6 +687,10 @@ function calcBreakdown(ph,pa,ah,aa,mult){
   const exact=ph===ah&&pa===aa;
   const raw=(outcome?3:0)+(diff?2:0)+(exact?3:0);
   return{outcome,diff,exact,raw,total:Math.round(raw*mult)};
+}
+
+function getAllMatchesSafe(){
+  try{return getAllMatches();}catch(e){return WC_MATCHES;}
 }
 
 function getAllMatches(){
