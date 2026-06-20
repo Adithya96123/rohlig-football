@@ -392,6 +392,10 @@ const WC_MATCHES=[
 
 // ── STATE ──
 let DB={matches:{},predictions:{},actuals:{}};
+try{
+  const customM=localStorage.getItem('rohlig_custom_matches');
+  if(customM)DB.matches.custom=JSON.parse(customM);
+}catch(e){}
 let currentUser=null;
 let saveTimer=null;
 
@@ -420,24 +424,67 @@ function calcBreakdown(ph,pa,ah,aa,mult){
   return{outcome,diff,exact,raw,total:Math.round(raw*mult*10)/10};
 }
 
-// ── STORAGE (localStorage) ──
-function loadDB(){
+// ── SUPABASE CONFIG ──
+const SB_URL='https://zpbmndyrdoiaoiyjifoy.supabase.co';
+const SB_KEY='sb_publishable_gBgIfYypy0-WyIzRP72zgg_MsCXyOpS';
+const SB_HEADERS={'apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY,'Content-Type':'application/json'};
+
+// ── STORAGE (Supabase shared database) ──
+async function loadDB(){
   try{
-    const s=localStorage.getItem('rohlig_wc_v2');
-    if(s) DB=JSON.parse(s);
-    // clean up wrongly stored future scores
-    if(DB.actuals){
-      Object.keys(DB.actuals).forEach(id=>{
-        const m=getAllMatches().find(x=>x.id===id);
-        if(m&&!isMatchLocked(m)) delete DB.actuals[id];
+    // Load all predictions
+    const predRes=await fetch(SB_URL+'/rest/v1/Predictions?select=*',{headers:SB_HEADERS});
+    const predRows=await predRes.json();
+    DB.predictions={};
+    if(Array.isArray(predRows)){
+      predRows.forEach(r=>{
+        if(!DB.predictions[r.match_id])DB.predictions[r.match_id]={};
+        DB.predictions[r.match_id][r.user_email]={home:r.home_goals,away:r.away_goals,name:r.user_name};
       });
     }
-  }catch(e){}
+    // Load all actuals
+    const actRes=await fetch(SB_URL+'/rest/v1/Actuals?select=*',{headers:SB_HEADERS});
+    const actRows=await actRes.json();
+    DB.actuals={};
+    if(Array.isArray(actRows)){
+      actRows.forEach(r=>{
+        DB.actuals[r.match_id]={home:r.home_goals,away:r.away_goals};
+      });
+    }
+  }catch(e){console.log('Load error',e);}
 }
-function saveDB(){
-  try{localStorage.setItem('rohlig_wc_v2',JSON.stringify(DB));showSync();setTimeout(hideSync,600);}catch(e){}
+
+async function savePredictionToCloud(matchId,email,name,home,away){
+  showSync();
+  try{
+    // Upsert: delete existing then insert (since no unique constraint needed)
+    await fetch(SB_URL+'/rest/v1/Predictions?match_id=eq.'+encodeURIComponent(matchId)+'&user_email=eq.'+encodeURIComponent(email),{
+      method:'DELETE',headers:SB_HEADERS
+    });
+    await fetch(SB_URL+'/rest/v1/Predictions',{
+      method:'POST',
+      headers:{...SB_HEADERS,'Prefer':'return=minimal'},
+      body:JSON.stringify({match_id:matchId,user_email:email,user_name:name,home_goals:home,away_goals:away})
+    });
+  }catch(e){console.log('Save pred error',e);}
+  hideSync();
 }
-function scheduleSave(){clearTimeout(saveTimer);saveTimer=setTimeout(saveDB,400);}
+
+async function saveActualToCloud(matchId,home,away){
+  showSync();
+  try{
+    await fetch(SB_URL+'/rest/v1/Actuals?match_id=eq.'+encodeURIComponent(matchId),{
+      method:'DELETE',headers:SB_HEADERS
+    });
+    await fetch(SB_URL+'/rest/v1/Actuals',{
+      method:'POST',
+      headers:{...SB_HEADERS,'Prefer':'return=minimal'},
+      body:JSON.stringify({match_id:matchId,home_goals:home,away_goals:away})
+    });
+  }catch(e){console.log('Save actual error',e);}
+  hideSync();
+}
+
 function showSync(){document.getElementById('syncing').classList.add('show');}
 function hideSync(){document.getElementById('syncing').classList.remove('show');}
 
@@ -460,7 +507,7 @@ function doLogout(){
   document.getElementById('main-app').style.display='none';
 }
 
-function initApp(){
+async function initApp(){
   document.getElementById('login-screen').style.display='none';
   document.getElementById('main-app').style.display='block';
   const[bg,fg]=getColor(currentUser.email);
@@ -472,8 +519,17 @@ function initApp(){
   if(ADMIN_EMAILS.map(e=>e.toLowerCase()).includes(currentUser.email.toLowerCase())){
     document.getElementById('admin-btn').style.display='flex';
   }
-  loadDB();
+  document.getElementById('schedule-container').innerHTML='<div style="text-align:center;color:rgba(255,255,255,0.4);padding:40px"><i class="ti ti-loader" style="font-size:24px;display:block;margin-bottom:8px"></i>Loading live data from all staff...</div>';
+  await loadDB();
   renderAll();
+  // Refresh data from cloud every 15 seconds so everyone sees latest predictions/scores
+  setInterval(async()=>{
+    if(currentUser){
+      await loadDB();
+      renderAll();
+      if(document.getElementById('tab-leaderboard').style.display!=='none')renderLeaderboard();
+    }
+  },15000);
 }
 
 // ── CHECK SAVED SESSION ──
@@ -594,14 +650,15 @@ function livePreview(id,mult){
   p.innerHTML=`${out} · Goal diff: ${Math.abs(h-a)} · Max <strong style="color:#4ade80">${Math.round(mult*8*10)/10} pts</strong>`;
 }
 
-function submitPred(id,mult){
+async function submitPred(id,mult){
   if(!currentUser)return;
   const h=document.getElementById('h-'+id),a=document.getElementById('a-'+id);
   if(h.value===''||a.value===''){alert('Enter both scores.');return;}
+  const homeVal=parseInt(h.value),awayVal=parseInt(a.value);
   if(!DB.predictions[id])DB.predictions[id]={};
-  DB.predictions[id][currentUser.email]={home:parseInt(h.value),away:parseInt(a.value),name:currentUser.name,ts:Date.now()};
-  scheduleSave();
+  DB.predictions[id][currentUser.email]={home:homeVal,away:awayVal,name:currentUser.name,ts:Date.now()};
   renderAll();
+  await savePredictionToCloud(id,currentUser.email,currentUser.name,homeVal,awayVal);
 }
 
 // ── LEADERBOARD ──
@@ -708,12 +765,14 @@ function renderAdminPanel(){
   if(!document.getElementById('f-date').value)document.getElementById('f-date').value=todayStr();
 }
 
-function saveActual(id){
+async function saveActual(id){
   const h=document.getElementById('ah-'+id).value,a=document.getElementById('aa-'+id).value;
   if(h===''||a===''){alert('Enter both scores.');return;}
+  const homeVal=parseInt(h),awayVal=parseInt(a);
   if(!DB.actuals)DB.actuals={};
-  DB.actuals[id]={home:parseInt(h),away:parseInt(a)};
-  saveDB();renderAdminPanel();renderAll();
+  DB.actuals[id]={home:homeVal,away:awayVal};
+  renderAdminPanel();renderAll();
+  await saveActualToCloud(id,homeVal,awayVal);
 }
 
 function addMatch(){
@@ -730,16 +789,23 @@ function addMatch(){
     uaeTime:document.getElementById('f-time').value||'20:00'};
   if(!DB.matches.custom)DB.matches.custom=[];
   DB.matches.custom.push(m);
-  saveDB();
+  try{localStorage.setItem('rohlig_custom_matches',JSON.stringify(DB.matches.custom));}catch(e){}
   ['f-home','f-away','f-hcode','f-acode','f-group','f-time'].forEach(x=>document.getElementById(x).value='');
   document.getElementById('f-date').value=todayStr();
   renderAdminPanel();renderAll();
 }
 
-function clearAll(){
-  if(!confirm('Delete ALL predictions and scores?'))return;
+async function clearAll(){
+  if(!confirm('Delete ALL predictions and scores for everyone? This cannot be undone.'))return;
+  try{
+    const all=getAllMatches();
+    for(const m of all){
+      await fetch(SB_URL+'/rest/v1/Predictions?match_id=eq.'+encodeURIComponent(m.id),{method:'DELETE',headers:SB_HEADERS});
+      await fetch(SB_URL+'/rest/v1/Actuals?match_id=eq.'+encodeURIComponent(m.id),{method:'DELETE',headers:SB_HEADERS});
+    }
+  }catch(e){console.log('Clear error',e);}
   DB={matches:{},predictions:{},actuals:{}};
-  saveDB();renderAll();renderAdminPanel();
+  renderAll();renderAdminPanel();
 }
 
 setInterval(()=>{updateDeadline();renderSchedule();},60000);
